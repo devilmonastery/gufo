@@ -1996,7 +1996,8 @@ std::shared_ptr<const JsonConstraint> JsonConstraint::WithTools(
     if (qwen) {
       // llama.cpp's `space` after "</tool_call>".
       const auto space = static_cast<std::uint32_t>(grammar->rules_.size());
-      grammar->rules_.push_back({{Repeat(Class(" \t\n"))}});
+      const auto whitespace = Class(std::string_view{" \t\n"});
+      grammar->rules_.push_back({Sequence{Repeat(whitespace)}});
       grammar->rules_[after] = {{space}};
       if (parallel)
         grammar->rules_[after].push_back({space, literal(marker), calls});
