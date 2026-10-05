@@ -1995,12 +1995,21 @@ std::shared_ptr<const JsonConstraint> JsonConstraint::WithTools(
     grammar->rules_.push_back({{}});
     if (qwen) {
       // llama.cpp's `space` after "</tool_call>".
-      const auto space = static_cast<std::uint32_t>(grammar->rules_.size());
-      const auto whitespace = Class(std::string_view{" \t\n"});
-      grammar->rules_.push_back({Sequence{Repeat(whitespace)}});
-      grammar->rules_[after] = {{space}};
+      std::bitset<256> whitespace;
+      whitespace.set(' ');
+      whitespace.set('\t');
+      whitespace.set('\n');
+      const auto whitespace_symbol =
+          static_cast<std::uint32_t>(kTerminal | grammar->classes_.size());
+      grammar->classes_.push_back(whitespace);
+      const auto repeat_space =
+          static_cast<std::uint32_t>(grammar->rules_.size());
+      JsonConstraint::Rule repeat_rule{{}, {whitespace_symbol, repeat_space}};
+      grammar->rules_.push_back(std::move(repeat_rule));
+      grammar->rules_[after] = {{repeat_space}};
       if (parallel)
-        grammar->rules_[after].push_back({space, literal(marker), calls});
+        grammar->rules_[after].push_back(
+            {repeat_space, literal(marker), calls});
     } else if (parallel && !deepseek) {
       const auto begin = literal(marker);
       grammar->rules_[after].push_back({begin, calls});
