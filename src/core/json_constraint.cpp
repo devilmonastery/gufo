@@ -865,32 +865,34 @@ private:
                       unsigned depth = 0) {
     if (depth > 64)
       Invalid("schema intersection exceeds its reference budget");
-    if (left.is_bool()) {
-      if (!left.as_bool())
-        throw JsonSchemaEmpty("JSON Schema: schema intersection is empty");
-      return right;
-    }
-    if (right.is_bool()) {
-      if (!right.as_bool())
-        throw JsonSchemaEmpty("JSON Schema: schema intersection is empty");
-      return left;
-    }
     Keys(left);
     Keys(right);
     if (const auto* parts = left.find("allOf")) {
       if (!parts->is_array() || parts->empty())
         Invalid("allOf needs at least one branch");
       auto result = Without(left, {"allOf"});
-      for (const auto& part : parts->items())
+      for (const auto& part : parts->items()) {
+        if (part.is_bool()) {
+          if (!part.as_bool())
+            throw JsonSchemaEmpty("JSON Schema: schema intersection is empty");
+          continue;
+        }
         result = Conjoin(result, part, depth + 1);
+      }
       return Conjoin(result, right, depth + 1);
     }
     if (const auto* parts = right.find("allOf")) {
       if (!parts->is_array() || parts->empty())
         Invalid("allOf needs at least one branch");
       auto result = Without(right, {"allOf"});
-      for (const auto& part : parts->items())
+      for (const auto& part : parts->items()) {
+        if (part.is_bool()) {
+          if (!part.as_bool())
+            throw JsonSchemaEmpty("JSON Schema: schema intersection is empty");
+          continue;
+        }
         result = Conjoin(result, part, depth + 1);
+      }
       return Conjoin(left, result, depth + 1);
     }
     if (const auto* ref = left.find("$ref"))
@@ -1435,8 +1437,14 @@ private:
         Invalid("allOf needs at least one branch");
       auto combined =
           Without(schema, {"allOf", "$defs", "title", "description"});
-      for (const auto& part : parts->items())
+      for (const auto& part : parts->items()) {
+        if (part.is_bool()) {
+          if (!part.as_bool())
+            throw JsonSchemaEmpty("JSON Schema: allOf contains false");
+          continue;
+        }
         combined = Conjoin(combined, part);
+      }
       return Visit(Store(std::move(combined)), depth);
     }
     if (const auto* any = schema.find("anyOf")) {

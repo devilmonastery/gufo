@@ -1308,8 +1308,67 @@ const json::Value* ResolveToolSchema(const json::Value& root,
   return target;
 }
 
+bool HasRecursiveSchemaReference(const json::Value& root,
+                                 const json::Value& original) {
+  std::vector<const json::Value*> active;
+  const auto visit = [&](auto&& self, const json::Value& schema,
+                         std::size_t depth) -> bool {
+    if (!schema.is_object())
+      return false;
+    if (depth > 64 || std::ranges::find(active, &schema) != active.end())
+      return true;
+    active.push_back(&schema);
+    bool recursive = false;
+    if (const auto* reference = schema.find("$ref")) {
+      try {
+        recursive = self(self,
+                         *sampling::JsonConstraint::ResolveReference(root,
+                                                                     *reference),
+                         depth + 1);
+      } catch (const std::invalid_argument&) {
+      }
+    }
+    const auto visit_child = [&](const json::Value& child) {
+      return !recursive && self(self, child, depth + 1);
+    };
+    for (const auto* key : {"properties", "patternProperties",
+                            "dependentSchemas", "dependencies"}) {
+      if (const auto* children = schema.find(key);
+          !recursive && children && children->is_object())
+        for (const auto& [name, child] : children->members()) {
+          (void)name;
+          if (visit_child(child)) {
+            recursive = true;
+            break;
+          }
+        }
+    }
+    for (const auto* key : {"items", "additionalProperties",
+                            "unevaluatedProperties", "not", "if", "then",
+                            "else", "contains", "propertyNames"})
+      if (const auto* child = schema.find(key);
+          !recursive && child && visit_child(*child))
+        recursive = true;
+    for (const auto* key : {"anyOf", "oneOf", "allOf", "prefixItems"})
+      if (const auto* children = schema.find(key);
+          !recursive && children && children->is_array())
+        for (const auto& child : children->items())
+          if (visit_child(child)) {
+            recursive = true;
+            break;
+          }
+    active.pop_back();
+    return recursive;
+  };
+  return visit(visit, original, 0);
+}
+
 bool SchemaAccepts(const json::Value& root, const json::Value& original,
                    const json::Value& value, std::size_t depth = 0) {
+  // Recursive schemas can exceed the native grammar's finite-depth limits;
+  // keep their values best-effort instead of rejecting generated tool calls.
+  if (HasRecursiveSchemaReference(root, original))
+    return true;
   const auto* resolved = ResolveToolSchema(root, original);
   if (!resolved || depth > 16)
     return true;  // Retain text for unknown non-strict argument types.
