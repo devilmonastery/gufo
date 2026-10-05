@@ -1339,6 +1339,10 @@ bool SchemaAccepts(const json::Value& root, const json::Value& original,
         return SchemaAccepts(root, item, value, depth + 1);
       });
   }
+  if (const auto* parts = schema.find("allOf"); parts && parts->is_array())
+    return std::ranges::all_of(parts->items(), [&](const auto& item) {
+      return SchemaAccepts(root, item, value, depth + 1);
+    });
   return true;
 }
 
@@ -1396,7 +1400,13 @@ void ParseQwenCalls(
           valid = false;
           break;
         }
-        const std::string name(Trim(body.substr(0, name_end)));
+        // As llama.cpp's parser, a declared name matches exactly, including
+        // surrounding spaces; other names are trimmed.
+        const std::string spelled(body.substr(0, name_end));
+        const std::string name = properties && properties->is_object() &&
+                                         properties->contains(spelled)
+                                     ? spelled
+                                     : std::string(Trim(spelled));
         body.remove_prefix(name_end + 1);
         // Decoded characters are argument data, including vocabulary token
         // spellings. Actual EOS IDs are handled by the backend before parsing.
@@ -1448,10 +1458,18 @@ void ParseQwenCalls(
         if (!is_string && !typed) {
           auto parsed = TryParseJson(raw);
           if (!parsed || !SchemaAccepts(*schema, *property, *parsed)) {
-            raw = PythonLiteralsToJson(raw);
-            parsed = TryParseJson(raw);
+            auto converted = PythonLiteralsToJson(raw);
+            auto alternative = TryParseJson(converted);
+            if (alternative &&
+                (!parsed || SchemaAccepts(*schema, *property, *alternative))) {
+              raw = std::move(converted);
+              parsed = std::move(alternative);
+            }
           }
-          if (!parsed || !SchemaAccepts(*schema, *property, *parsed)) {
+          // As in llama.cpp, a value the grammar admitted is kept when its
+          // schema cannot be enforced natively (e.g. a recursive or empty
+          // one). Recovery without a grammar checks the whole call below.
+          if (!parsed) {
             valid = false;
             break;
           }

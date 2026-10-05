@@ -2865,9 +2865,11 @@ void TestJsonToolStringOwnership() {
     "type":"object","properties":{"content":{"type":"string","pattern":".*"}},
     "required":["content"],"additionalProperties":false
   })");
-  Expect(
-      !Constraint::ToolParameters(schema, false, Constraint::ToolFormat::kQwen),
-      "string patterns require JSON tool framing");
+  // Native runners keep raw text for a pattern, as llama.cpp; the JSON
+  // envelope below is the syntax of runners without a native format.
+  Expect(Constraint::ToolParameters(schema, false,
+                                    Constraint::ToolFormat::kQwen) != nullptr,
+         "string patterns keep native tool framing");
   const auto grammar = Constraint::WithTools(
       nullptr, {{"write", Constraint::Compile(schema, false)}}, false, true);
   auto request = gufo::json::parse(R"({
@@ -3001,8 +3003,11 @@ void TestNativeToolDialectSelection() {
     auto schema = gufo::json::parse(R"({"type":"object",
     "properties":{"path":{"type":"string","pattern":"^[a-z.]+$"}},
     "required":["path"],"additionalProperties":false})");
-    Expect(!JsonConstraint::ToolParameters(schema, false, Format::kDeepSeek),
-           "patterned string requires JSON tool fallback");
+    // A native runner keeps DSML for this schema; the JSON-envelope runner
+    // below is the remaining fallback syntax.
+    Expect(JsonConstraint::ToolParameters(schema, false, Format::kDeepSeek) !=
+               nullptr,
+           "patterned string keeps native tool framing");
     auto body = gufo::json::parse(R"({
     "model":"test-model","reasoning_effort":"none",
     "messages":[{"role":"user","content":"Read fixture.xml."}],
@@ -3060,10 +3065,8 @@ void TestNativeToolDialectSelection() {
     const std::string call = native_call(format, "fixture.xml");
     const auto foreign =
         format == Format::kDeepSeek ? Format::kQwen : Format::kDeepSeek;
-    const std::string suffix =
-        format == Format::kDeepSeek
-            ? ""
-            : " The XML root remains `<tool_calls></tool_calls>`.";
+    // As in llama.cpp, calls end the output in both formats.
+    const std::string suffix;
     for (const std::string& prefix :
          {std::string{"The XML root is `<tool_calls></tool_calls>`.\n"},
           std::string{"The foreign wrapper is `"} +
@@ -3350,9 +3353,11 @@ void TestNativeToolTextOutsideEnvelopes() {
     if (fixture.format == Format::kJson) {
       parameters_schema["enum"] = gufo::json::parse(
           R"([{"path":"fixture.txt"},{"path":"example.txt"}])");
-      Expect(!JsonConstraint::ToolParameters(parameters_schema, false,
-                                             Format::kDeepSeek),
-             "finite object parameters exercise supported JSON fallback");
+      // A native runner keeps DSML for finite objects too; this fixture
+      // covers runners whose only call syntax is the JSON envelope.
+      Expect(JsonConstraint::ToolParameters(parameters_schema, false,
+                                            Format::kDeepSeek) != nullptr,
+             "finite object parameters keep native tool framing");
     }
     if (fixture.canonical) {
       const auto parameters = JsonConstraint::ToolParameters(
@@ -3361,12 +3366,19 @@ void TestNativeToolTextOutsideEnvelopes() {
       const auto grammar =
           JsonConstraint::WithTools(nullptr, {{"read", parameters}},
                                     fixture.required, true, fixture.format);
-      // As in llama.cpp, the native DeepSeek block ends the output. Text after
-      // it is reachable only without that grammar, e.g. the JSON fallback.
+      // As in llama.cpp, native calls end the output (Qwen may add the
+      // whitespace llama.cpp's `space` admits). Text after them is reachable
+      // only without that grammar, e.g. the JSON envelope runners use.
       std::string_view admitted = fixture.raw;
       if (fixture.format == Format::kDeepSeek) {
         constexpr std::string_view kClose = "\n</｜DSML｜tool_calls>";
         admitted = admitted.substr(0, admitted.find(kClose) + kClose.size());
+      } else if (fixture.format == Format::kQwen) {
+        constexpr std::string_view kClose = "</tool_call>";
+        auto end = admitted.find(kClose) + kClose.size();
+        while (end < admitted.size() && admitted[end] == '\n')
+          ++end;
+        admitted = admitted.substr(0, end);
       }
       auto state = grammar->Start();
       for (const unsigned char byte : admitted) {
@@ -3381,7 +3393,7 @@ void TestNativeToolTextOutsideEnvelopes() {
                    ->Advance(state, static_cast<unsigned char>(
                                         fixture.raw[admitted.size()]))
                    .empty(),
-               "native DeepSeek output ends after its call block");
+               "native output ends after its calls");
     }
     for (const bool responses : {false, true})
       for (const bool stream : {false, true})
@@ -3557,6 +3569,150 @@ void TestNativeReferencedArgumentTypes() {
     }
 }
 
+// Schemas that used to force a JSON envelope now stay native (#438). Their raw
+// values are typed as llama.cpp's qwen3-coder parser types them: a schema that
+// admits other JSON types tries them first, an exact string stays text.
+void TestNativeArgumentTypingMatrix() {
+  struct Case {
+    const char* schema;
+    const char* raw;
+    const char* expected;
+  };
+  const std::vector<Case> cases{
+      {R"({"type":"string","pattern":"^[0-9]+$"})", "42", R"("42")"},
+      {R"({"type":"string","format":"uri"})", "https://a.b",
+       R"("https://a.b")"},
+      {R"({"type":"string","default":"x","examples":["y"]})", "true",
+       R"("true")"},
+      {R"({"oneOf":[{"type":"string"},{"type":"integer"}]})", "42", "42"},
+      {R"({"oneOf":[{"type":"string"},{"type":"integer"}]})", "forty",
+       R"("forty")"},
+      {R"({"allOf":[{"type":"string"},{"minLength":1}]})", "42", R"("42")"},
+      {R"({"allOf":[{"type":"integer"},{"minimum":1}]})", "42", "42"},
+      {R"({"not":{"type":"null"}})", "plain", R"("plain")"},
+      {R"({"type":["string","null"]})", "null", "null"},
+      {R"({"anyOf":[{"type":"integer"},{"type":"null"}]})", "null", "null"},
+      {R"({"type":"integer","exclusiveMinimum":0,"maximum":9007199254740991})",
+       "240000", "240000"},
+      {R"({"type":"object","properties":{"x":{"type":"integer"}}})",
+       R"({"x": 1})", R"({"x":1})"},
+      {R"({"type":"array","items":{"type":"object"}})", R"([{"k": "v"}])",
+       R"([{"k":"v"}])"},
+      // A recursive schema the grammar cannot enforce keeps its JSON value.
+      {R"({"$ref":"#"})", "5", "5"},
+      {R"({"type":"string"})", "line 1\n<b>\"q\"</b>",
+       R"("line 1\n<b>\"q\"</b>")"},
+  };
+  for (const auto& item : cases) {
+    for (
+        const auto* root :
+        {R"({"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object"})",
+         R"({"type":"object","additionalProperties":true})"}) {
+      for (const bool stream : {false, true}) {
+        auto parameters = gufo::json::parse(root);
+        parameters["properties"]["v"] = gufo::json::parse(item.schema);
+        parameters["required"] = gufo::json::parse(R"(["v"])");
+        auto body = gufo::json::parse(R"({"model":"test-model",
+          "messages":[{"role":"user","content":"call record"}],
+          "tools":[],"tool_choice":"required"})");
+        auto tool = gufo::json::Value::object();
+        tool["type"] = "function";
+        tool["function"]["name"] = "record";
+        tool["function"]["parameters"] = parameters;
+        body["tools"].push_back(std::move(tool));
+        body["stream"] = stream;
+        FakeBackend backend;
+        backend.tool_format = gufo::sampling::JsonConstraint::ToolFormat::kQwen;
+        backend.pieces = {std::string("<tool_call>\n<function=record>\n"
+                                      "<parameter=v>\n") +
+                          item.raw +
+                          "\n</parameter>\n</function>\n</tool_call>"};
+        const auto response =
+            gufo::server::HandleOpenAiChat(Request(body.dump()), backend);
+        Expect(response.status == 200, "native typed call succeeds");
+        std::string arguments;
+        std::string content;
+        if (stream) {
+          response.streaming_body([&](std::string_view part) {
+            if (part == "data: [DONE]\n\n")
+              return true;
+            const auto event = gufo::json::parse(part.substr(6));
+            for (const auto& choice : event.find("choices")->items())
+              if (const auto* delta = choice.find("delta")) {
+                content += delta->member_str("content");
+                if (const auto* calls = delta->find("tool_calls"))
+                  for (const auto& call : calls->items())
+                    arguments += call.find("function")->member_str("arguments");
+              }
+            return true;
+          });
+        } else {
+          const auto output = gufo::json::parse(response.body);
+          const auto& message =
+              *output.find("choices")->items()[0].find("message");
+          content = message.member_str("content");
+          if (const auto* calls = message.find("tool_calls"))
+            arguments =
+                calls->items()[0].find("function")->member_str("arguments");
+        }
+        const auto expected = std::string(R"({"v":)") + item.expected + "}";
+        if (arguments.empty() || gufo::json::parse(arguments).dump() !=
+                                     gufo::json::parse(expected).dump())
+          std::cerr << "typing schema=" << item.schema << " raw=" << item.raw
+                    << " stream=" << stream << " got=" << arguments << '\n';
+        Expect(!arguments.empty() && gufo::json::parse(arguments).dump() ==
+                                         gufo::json::parse(expected).dump(),
+               "native arguments are typed as llama.cpp types them");
+        Expect(content.empty(), "a native call leaves no visible framing");
+      }
+    }
+  }
+  // As llama.cpp's parser, a declared name with surrounding spaces matches
+  // exactly; an undeclared spelling is still trimmed.
+  for (const bool stream : {false, true}) {
+    auto body = gufo::json::parse(R"({"model":"test-model",
+      "messages":[{"role":"user","content":"call record"}],
+      "tools":[{"type":"function","function":{"name":"record","strict":true,
+        "parameters":{"type":"object","properties":{" value ":{"type":"string"}},
+        "required":[" value "],"additionalProperties":false}}}],
+      "tool_choice":"required"})");
+    body["stream"] = stream;
+    FakeBackend backend;
+    backend.tool_format = gufo::sampling::JsonConstraint::ToolFormat::kQwen;
+    backend.pieces = {
+        "<tool_call>\n<function=record>\n<parameter= value >\nx\n</parameter>\n"
+        "</function>\n</tool_call>"};
+    const auto response =
+        gufo::server::HandleOpenAiChat(Request(body.dump()), backend);
+    Expect(response.status == 200, "spaced parameter call succeeds");
+    std::string arguments;
+    if (stream) {
+      response.streaming_body([&](std::string_view part) {
+        if (part == "data: [DONE]\n\n")
+          return true;
+        const auto event = gufo::json::parse(part.substr(6));
+        for (const auto& choice : event.find("choices")->items())
+          if (const auto* delta = choice.find("delta"))
+            if (const auto* calls = delta->find("tool_calls"))
+              for (const auto& call : calls->items())
+                arguments += call.find("function")->member_str("arguments");
+        return true;
+      });
+    } else {
+      const auto output = gufo::json::parse(response.body);
+      arguments = output.find("choices")
+                      ->items()[0]
+                      .find("message")
+                      ->find("tool_calls")
+                      ->items()[0]
+                      .find("function")
+                      ->member_str("arguments");
+    }
+    Expect(arguments == R"({" value ":"x"})",
+           "a declared spaced name keeps its exact spelling");
+  }
+}
+
 void TestNativeUnionToolTypes() {
   // Non-strict unions stay in Qwen's native syntax (#383). The parser tries
   // their typed alternatives first, as llama.cpp's qwen3-coder parser does,
@@ -3613,18 +3769,34 @@ void TestWildcardToolTypes() {
     "patternProperties":{"^x_":{"type":"integer"}}})");
   const auto arguments = gufo::json::parse(
       R"({"value":"alpha","x_n":1,"x_b":true,"x_z":null,"x_a":[1],"x_o":{"n":1},"x_s":"1"})");
-  for (const auto native : {Format::kQwen, Format::kDeepSeek}) {
-    auto parameters = Constraint::ToolParameters(schema, false, native);
-    const auto format = parameters ? native : Format::kJson;
-    if (!parameters)
-      parameters = Constraint::ToolParameters(schema, false, format);
+  for (const auto format : {Format::kQwen, Format::kDeepSeek}) {
+    const auto parameters = Constraint::ToolParameters(schema, false, format);
+    Expect(parameters != nullptr, "wildcard tools keep native framing");
     const auto grammar = Constraint::WithTools(
         nullptr, {{"record", parameters}}, true, false, format);
+    // Qwen tags carry no type flag, so as in llama.cpp only declared
+    // parameters are generated; DeepSeek's flag keeps typed wildcards.
+    const auto expected = format == Format::kQwen
+                              ? gufo::json::parse(R"({"value":"alpha"})")
+                              : arguments;
     std::string call;
-    if (format == Format::kJson) {
-      call =
-          "<tool_call>{\"name\":\"record\",\"arguments\":" + arguments.dump() +
-          "}</tool_call>";
+    if (format == Format::kQwen) {
+      std::string extras;
+      for (const auto& [name, value] : arguments.members())
+        if (name != "value")
+          extras += "<parameter=" + name + ">\n" +
+                    (value.is_string() ? value.str() : value.dump()) +
+                    "\n</parameter>\n";
+      const std::string head =
+          "<tool_call>\n<function=record>\n<parameter=value>\nalpha\n"
+          "</parameter>\n";
+      const std::string tail = "</function>\n</tool_call>";
+      auto rejected = grammar->Start();
+      for (unsigned char byte : head + extras + tail)
+        rejected = grammar->Advance(rejected, byte);
+      Expect(rejected.empty() || !grammar->Complete(rejected),
+             "undeclared Qwen wildcards are not generated");
+      call = head + tail;
     } else {
       call = "<｜DSML｜tool_calls>\n<｜DSML｜invoke name=\"record\">\n";
       for (const auto& [name, value] : arguments.members())
@@ -3672,7 +3844,7 @@ void TestWildcardToolTypes() {
                     ->items()[0]
                     .find("function")
                     ->member_str("arguments");
-      Expect(encoded == arguments.dump(),
+      Expect(encoded == expected.dump(),
              "wildcard JSON types survive transport");
     }
   }
@@ -4524,6 +4696,7 @@ int main() {
   TestNativeReferencedArgumentTypes();
   TestWildcardToolTypes();
   TestNativeUnionToolTypes();
+  TestNativeArgumentTypingMatrix();
   TestToolMetadataAndFraming();
   TestResponsesLiveAndCancellation();
   TestCachePromptOption();
