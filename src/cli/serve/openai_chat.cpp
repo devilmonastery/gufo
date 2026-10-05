@@ -1127,6 +1127,22 @@ bool DeclaredEnvelope(std::string_view tag,
          });
 }
 
+bool QwenCallTail(std::string_view region, ToolCloserSet closers) {
+  if (std::ranges::find(closers, "</function>") == closers.end() ||
+      std::ranges::find(closers, "</tool_call>") == closers.end()) {
+    return false;
+  }
+  region = TrimTrailing(region);
+  if (!region.ends_with("</tool_call>"))
+    return false;
+  region.remove_suffix(std::string_view{"</tool_call>"}.size());
+  region = TrimTrailing(region);
+  if (!region.ends_with("</function>"))
+    return false;
+  region.remove_suffix(std::string_view{"</function>"}.size());
+  return TrimTrailing(region).ends_with("</parameter>");
+}
+
 // Find a closed or truncated client envelope whose request context identifies
 // a tool attempt. A bare parameter block is not enough evidence.
 std::size_t EnvelopeBlockStart(std::string_view full, std::size_t stop,
@@ -1139,13 +1155,11 @@ std::size_t EnvelopeBlockStart(std::string_view full, std::size_t stop,
     return std::string_view::npos;
   }
   const auto tag_end = full.find('>', opening);
-  if (!after_call) {
-    if (tag_end == std::string_view::npos || tag_end >= stop) {
-      return std::string_view::npos;
-    }
-    if (!DeclaredEnvelope(full.substr(opening, tag_end - opening), tools)) {
-      return std::string_view::npos;
-    }
+  const bool declared =
+      tag_end != std::string_view::npos && tag_end < stop &&
+      DeclaredEnvelope(full.substr(opening, tag_end - opening), tools);
+  if (!after_call && !declared) {
+    return std::string_view::npos;
   }
   const auto region = TrimTrailing(full.substr(opening, stop - opening));
   for (const auto closer : kEnvelopeClosers) {
@@ -1156,6 +1170,12 @@ std::size_t EnvelopeBlockStart(std::string_view full, std::size_t stop,
   if (region.find(kEnvelopeParameters.front()) == std::string_view::npos) {
     return std::string_view::npos;
   }
+  const bool qwen_call_follows =
+      stop < full.size() && full.substr(stop).starts_with("<tool_call>");
+  // Some responses wrap a Qwen call in a client invoke envelope.
+  if ((qwen_call_follows || (after_call && declared)) &&
+      QwenCallTail(region, closers))
+    return opening;
   for (const auto closer : closers) {
     if (region.find(closer) != std::string_view::npos) {
       return std::string_view::npos;

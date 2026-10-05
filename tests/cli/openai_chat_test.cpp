@@ -3798,6 +3798,12 @@ void TestToolClosingFraming() {
       "tool_call>";
   const std::string envelope =
       "<invoke name=\"f\"><parameter name=\"text\">x</parameter></invoke>";
+  const std::string mixed_envelope =
+      "<invoke name=\"f\"><parameter name=\"text\">x</parameter>"
+      "<parameter=timeout>\n240000\n</parameter></function></tool_call>";
+  const std::string undeclared_mixed_envelope =
+      "<invoke name=\"documentation\"><parameter name=\"text\">x"
+      "</parameter></function></tool_call>";
   const std::string raw_xml =
       "<invoke name=\"documentation\"><parameter "
       "name=\"text\">x</parameter></invoke>";
@@ -3825,6 +3831,12 @@ void TestToolClosingFraming() {
       {call + "\n</function>\n" + call, 2, R"({"text":"42"})", ""},
       {call + "\n" + envelope, 1, R"({"text":"42"})", ""},
       {call + "\n</invoke>\n<|im_end|>", 1, R"({"text":"42"})", "<|im_end|>"},
+      {mixed_envelope + "\n" + call, 1, R"({"text":"42"})", ""},
+      {"`" + mixed_envelope + "`\n" + call, 1, R"({"text":"42"})",
+       "`" + mixed_envelope + "`\n"},
+      {undeclared_mixed_envelope + "\n" + call, 1, R"({"text":"42"})",
+       undeclared_mixed_envelope + "\n"},
+      {mixed_envelope, 0, "", mixed_envelope},
       {"</invoke>\n" + call, 1, R"({"text":"42"})", "</invoke>\n"},
       {"</invoke>", 0, "", "</invoke>"},
       {"Text </parameter>", 0, "", "Text </parameter>"},
