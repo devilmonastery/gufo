@@ -1325,24 +1325,28 @@ bool SchemaAccepts(const json::Value& root, const json::Value& original,
            (type == "object" && value.is_object());
   };
   if (const auto* type = schema.find("type")) {
-    if (type->is_string())
-      return matches(type->get_str());
-    if (type->is_array())
-      return std::ranges::any_of(type->items(), [&](const auto& item) {
-        return item.is_string() && matches(item.get_str());
-      });
-    return false;
+    const bool matches_type =
+        type->is_string()
+            ? matches(type->get_str())
+            : type->is_array() &&
+                  std::ranges::any_of(type->items(), [&](const auto& item) {
+                    return item.is_string() && matches(item.get_str());
+                  });
+    if (!matches_type)
+      return false;
   }
   for (const auto* name : {"anyOf", "oneOf"}) {
     if (const auto* choices = schema.find(name); choices && choices->is_array())
-      return std::ranges::any_of(choices->items(), [&](const auto& item) {
-        return SchemaAccepts(root, item, value, depth + 1);
-      });
+      if (!std::ranges::any_of(choices->items(), [&](const auto& item) {
+            return SchemaAccepts(root, item, value, depth + 1);
+          }))
+        return false;
   }
   if (const auto* parts = schema.find("allOf"); parts && parts->is_array())
-    return std::ranges::all_of(parts->items(), [&](const auto& item) {
-      return SchemaAccepts(root, item, value, depth + 1);
-    });
+    if (!std::ranges::all_of(parts->items(), [&](const auto& item) {
+          return SchemaAccepts(root, item, value, depth + 1);
+        }))
+      return false;
   return true;
 }
 
@@ -1457,11 +1461,13 @@ void ParseQwenCalls(
         std::string raw(is_string ? value : Trim(value));
         if (!is_string && !typed) {
           auto parsed = TryParseJson(raw);
-          if (!parsed || !SchemaAccepts(*schema, *property, *parsed)) {
+          if (parsed && !SchemaAccepts(*schema, *property, *parsed))
+            parsed.reset();
+          if (!parsed) {
             auto converted = PythonLiteralsToJson(raw);
             auto alternative = TryParseJson(converted);
             if (alternative &&
-                (!parsed || SchemaAccepts(*schema, *property, *alternative))) {
+                SchemaAccepts(*schema, *property, *alternative)) {
               raw = std::move(converted);
               parsed = std::move(alternative);
             }

@@ -3587,6 +3587,7 @@ void TestNativeArgumentTypingMatrix() {
       {R"({"oneOf":[{"type":"string"},{"type":"integer"}]})", "42", "42"},
       {R"({"oneOf":[{"type":"string"},{"type":"integer"}]})", "forty",
        R"("forty")"},
+      {R"({"type":"boolean"})", "True", "true"},
       {R"({"allOf":[{"type":"string"},{"minLength":1}]})", "42", R"("42")"},
       {R"({"allOf":[{"type":"integer"},{"minimum":1}]})", "42", "42"},
       {R"({"not":{"type":"null"}})", "plain", R"("plain")"},
@@ -3666,6 +3667,24 @@ void TestNativeArgumentTypingMatrix() {
         Expect(content.empty(), "a native call leaves no visible framing");
       }
     }
+  }
+  {
+    auto body = gufo::json::parse(R"({"model":"test-model",
+      "messages":[{"role":"user","content":"call record"}],
+      "tools":[{"type":"function","function":{"name":"record",
+        "parameters":{"type":"object","properties":{"n":{"type":"integer"}},
+        "required":["n"],"additionalProperties":false}}}]})");
+    FakeBackend backend;
+    backend.tool_format = gufo::sampling::JsonConstraint::ToolFormat::kQwen;
+    backend.pieces = {"<tool_call>\n<function=record>\n<parameter=n>\n"
+                      "true\n</parameter>\n</function>\n</tool_call>"};
+    const auto response =
+        gufo::server::HandleOpenAiChat(Request(body.dump()), backend);
+    Expect(response.status == 200, "invalid native output is handled safely");
+    const auto output = gufo::json::parse(response.body);
+    const auto& message = *output.find("choices")->items()[0].find("message");
+    Expect(!message.find("tool_calls"),
+           "a parseable value with the wrong declared type is not invoked");
   }
   // As llama.cpp's parser, a declared name with surrounding spaces matches
   // exactly; an undeclared spelling is still trimmed.

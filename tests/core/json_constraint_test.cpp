@@ -952,6 +952,37 @@ void TestNativeTools() {
                                 "string=\"false\">null</｜DSML｜parameter>\n"
                                 "</｜DSML｜invoke>\n</｜DSML｜tool_calls>"));
   }
+  for (const auto* property_schema :
+       {R"({"type":"integer","allOf":[{"minimum":5}]})",
+        R"({"allOf":[{"type":"integer"},{"minimum":5}]})"}) {
+    const auto constrained = parse(
+        std::string(R"({"type":"object","properties":{"n":)") +
+        property_schema +
+        R"(},"required":["n"],"additionalProperties":false})");
+    const auto json = JsonConstraint::Compile(constrained, false);
+    assert(Accepts(*json, R"({"n":5})"));
+    assert(!Accepts(*json, R"({"n":4})"));
+    for (const auto format : {Format::kQwen, Format::kDeepSeek}) {
+      auto fallback = constrained;
+      fallback["x-client-extension"] = true;
+      const auto parameters =
+          JsonConstraint::ToolParameters(fallback, false, format);
+      const auto grammar = JsonConstraint::WithTools(
+          nullptr, {{"record", parameters}}, true, false, format);
+      const std::string call =
+          format == Format::kQwen
+              ? "<tool_call>\n<function=record>\n<parameter=n>\n"
+                "5\n</parameter>\n</function>\n</tool_call>"
+              : "<｜DSML｜tool_calls>\n<｜DSML｜invoke name=\"record\">\n"
+                "<｜DSML｜parameter name=\"n\" string=\"false\">5"
+                "</｜DSML｜parameter>\n</｜DSML｜invoke>\n"
+                "</｜DSML｜tool_calls>";
+      auto invalid = call;
+      invalid.replace(invalid.find('5'), 1, "4");
+      assert(Accepts(*grammar, call));
+      assert(!Accepts(*grammar, invalid));
+    }
+  }
   const auto delimiter_pattern = parse(R"({"type":"object",
     "properties":{"text":{"type":"string","pattern":"^\\n</parameter>$"}},
     "required":["text"],"additionalProperties":false})");
@@ -1018,6 +1049,8 @@ void TestOpenNativeTools() {
                       parameter("city name", " é🦉\n\\path\n</tool_call> ") +
                       end;
     assert(Accepts(*grammar, call));
+    if (qwen)
+      assert(Accepts(*grammar, call + " \t\n\n\n"));
     // DeepSeek parallel calls share one block. As in llama.cpp, calls end
     // the output in both formats.
     assert(Accepts(*grammar, call + "\n" + call) == qwen);

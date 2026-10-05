@@ -619,6 +619,7 @@ private:
   ValueTypeSet ValueTypes(const json::Value& schema, std::size_t depth) const {
     static constexpr std::array<std::string_view, 6> kNames{
         "string", "number", "boolean", "null", "array", "object"};
+    auto types = ValueTypeSet().set();
     const auto of = [&](const json::Value& value) {
       ValueTypeSet types;
       types.set(value.is_string()   ? 0
@@ -636,52 +637,49 @@ private:
     if (const auto* reference = schema.find("$ref")) {
       try {
         if (const auto* target = Reference(*reference))
-          return ValueTypes(*target, depth + 1);
+          types &= ValueTypes(*target, depth + 1);
       } catch (const std::invalid_argument&) {
       }
-      return ValueTypeSet().set();
     }
     if (const auto* value = schema.find("const"))
-      return of(*value);
+      types &= of(*value);
     if (const auto* values = schema.find("enum");
         values && values->is_array()) {
-      ValueTypeSet types;
+      ValueTypeSet enumerated;
       for (const auto& value : values->items())
-        types |= of(value);
-      return types;
+        enumerated |= of(value);
+      types &= enumerated;
     }
     if (const auto* type = schema.find("type")) {
-      ValueTypeSet types;
+      ValueTypeSet declared;
       const auto add = [&](const json::Value& name) {
         if (!name.is_string())
           return;
         const auto spelling = name.str() == "integer" ? "number" : name.str();
         for (std::size_t i = 0; i < kNames.size(); ++i)
-          types[i] = types[i] || kNames[i] == spelling;
+          declared[i] = declared[i] || kNames[i] == spelling;
       };
       if (type->is_array())
         for (const auto& name : type->items())
           add(name);
       else
         add(*type);
-      return types;
+      types &= declared;
     }
     for (const auto* key : {"anyOf", "oneOf"}) {
       if (const auto* choices = schema.find(key);
           choices && choices->is_array()) {
-        ValueTypeSet types;
+        ValueTypeSet alternatives;
         for (const auto& choice : choices->items())
-          types |= ValueTypes(choice, depth + 1);
-        return types;
+          alternatives |= ValueTypes(choice, depth + 1);
+        types &= alternatives;
       }
     }
     if (const auto* parts = schema.find("allOf"); parts && parts->is_array()) {
-      auto types = ValueTypeSet().set();
       for (const auto& part : parts->items())
         types &= ValueTypes(part, depth + 1);
-      return types;
     }
-    return ValueTypeSet().set();
+    return types;
   }
 
   const json::Value* NativeSchema(const json::Value& original) const {
@@ -867,8 +865,34 @@ private:
                       unsigned depth = 0) {
     if (depth > 64)
       Invalid("schema intersection exceeds its reference budget");
+    if (left.is_bool()) {
+      if (!left.as_bool())
+        throw JsonSchemaEmpty("JSON Schema: schema intersection is empty");
+      return right;
+    }
+    if (right.is_bool()) {
+      if (!right.as_bool())
+        throw JsonSchemaEmpty("JSON Schema: schema intersection is empty");
+      return left;
+    }
     Keys(left);
     Keys(right);
+    if (const auto* parts = left.find("allOf")) {
+      if (!parts->is_array() || parts->empty())
+        Invalid("allOf needs at least one branch");
+      auto result = Without(left, {"allOf"});
+      for (const auto& part : parts->items())
+        result = Conjoin(result, part, depth + 1);
+      return Conjoin(result, right, depth + 1);
+    }
+    if (const auto* parts = right.find("allOf")) {
+      if (!parts->is_array() || parts->empty())
+        Invalid("allOf needs at least one branch");
+      auto result = Without(right, {"allOf"});
+      for (const auto& part : parts->items())
+        result = Conjoin(result, part, depth + 1);
+      return Conjoin(left, result, depth + 1);
+    }
     if (const auto* ref = left.find("$ref"))
       return Conjoin(Conjoin(*Reference(*ref), Without(left, {"$ref", "$defs"}),
                              depth + 1),
@@ -1327,6 +1351,7 @@ private:
                                                     "enum",
                                                     "const",
                                                     "anyOf",
+                                                    "allOf",
                                                     "$defs",
                                                     "$ref",
                                                     "title",
@@ -1347,6 +1372,8 @@ private:
         Invalid(key + " must be a string");
       if (key == "anyOf" && (!value.is_array() || value.empty()))
         Invalid("anyOf needs at least one branch");
+      if (key == "allOf" && (!value.is_array() || value.empty()))
+        Invalid("allOf needs at least one branch");
     }
   }
   std::uint32_t Visit(const json::Value& schema, std::size_t depth) {
@@ -1402,6 +1429,15 @@ private:
       return siblings.empty()
                  ? Visit(*Reference(*ref), depth)
                  : Visit(Store(Conjoin(*Reference(*ref), siblings)), depth);
+    }
+    if (const auto* parts = schema.find("allOf")) {
+      if (!parts->is_array() || parts->empty())
+        Invalid("allOf needs at least one branch");
+      auto combined =
+          Without(schema, {"allOf", "$defs", "title", "description"});
+      for (const auto& part : parts->items())
+        combined = Conjoin(combined, part);
+      return Visit(Store(std::move(combined)), depth);
     }
     if (const auto* any = schema.find("anyOf")) {
       if (!any->is_array() || any->size() == 0)
@@ -1960,11 +1996,7 @@ std::shared_ptr<const JsonConstraint> JsonConstraint::WithTools(
     if (qwen) {
       // llama.cpp's `space` after "</tool_call>".
       const auto space = static_cast<std::uint32_t>(grammar->rules_.size());
-      grammar->rules_.push_back({});
-      for (const std::string_view gap : {"", " ", "\n", "\n\n"})
-        grammar->rules_[space].push_back(
-            gap.empty() ? JsonConstraint::Sequence{}
-                        : JsonConstraint::Sequence{literal(gap)});
+      grammar->rules_.push_back({{Repeat(Class(" \t\n"))}});
       grammar->rules_[after] = {{space}};
       if (parallel)
         grammar->rules_[after].push_back({space, literal(marker), calls});

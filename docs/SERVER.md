@@ -705,6 +705,8 @@ requirements. Union and untyped arguments keep the native syntax, as in
 llama.cpp: when the union admits strings the value is raw text, and its typed
 alternatives (such as `null` or an object) are tried before the string, so Qwen
 cannot return the literal string `"null"` for a string/null union.
+`allOf` branches are intersected with their sibling constraints for the schema
+keywords the native grammar supports.
 A model with a native call syntax (Qwen, DeepSeek) never switches to a JSON
 envelope, whatever the schema, strict flag or tool choice: as in llama.cpp
 `common/parsers/qwen3-coder.cpp` and `deepseek.cpp`, every call uses the chat
