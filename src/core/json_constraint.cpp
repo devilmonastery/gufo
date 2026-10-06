@@ -1801,7 +1801,8 @@ std::shared_ptr<const JsonConstraint> JsonConstraint::ToolParameters(
   // not turn a best-effort tool into an empty-arguments grammar (#324).
   const bool open_untyped =
       grammar && untyped && !preserve_root &&
-      !ClosedProperties(schema, best_effort) && (best_effort || open) &&
+      !ClosedProperties(schema, best_effort) &&
+      (best_effort || open || AdmitsExtraProperties(schema)) &&
       !(format == ToolFormat::kQwen && HasPropertySchemas(schema));
   if (open_untyped) {
     grammar = OpenToolParameters(format);
