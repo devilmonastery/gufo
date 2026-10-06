@@ -1764,8 +1764,11 @@ std::shared_ptr<const JsonConstraint> JsonConstraint::ToolParameters(
   if (!strict && !normalized.contains("$ref")) {
     if (!normalized.contains("type"))
       normalized["type"] = "object";
-    // Finite object values also supply their own fields.
-    if (!normalized.contains("const") && !normalized.contains("enum")) {
+    // Finite values and composition schemas supply their own fields. Adding an
+    // empty closed sibling object would intersect away fields from allOf.
+    if (!normalized.contains("const") && !normalized.contains("enum") &&
+        !normalized.contains("anyOf") && !normalized.contains("oneOf") &&
+        !normalized.contains("allOf")) {
       if (!normalized.contains("properties"))
         normalized["properties"] = json::Value::object();
       if (!normalized.contains("additionalProperties"))
