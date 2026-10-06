@@ -3676,8 +3676,9 @@ void TestNativeArgumentTypingMatrix() {
         "required":["n"],"additionalProperties":false}}}]})");
     FakeBackend backend;
     backend.tool_format = gufo::sampling::JsonConstraint::ToolFormat::kQwen;
-    backend.pieces = {"<tool_call>\n<function=record>\n<parameter=n>\n"
-                      "true\n</parameter>\n</function>\n</tool_call>"};
+    backend.pieces = {
+        "<tool_call>\n<function=record>\n<parameter=n>\n"
+        "true\n</parameter>\n</function>\n</tool_call>"};
     const auto response =
         gufo::server::HandleOpenAiChat(Request(body.dump()), backend);
     Expect(response.status == 200, "invalid native output is handled safely");

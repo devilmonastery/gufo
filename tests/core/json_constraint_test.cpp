@@ -955,10 +955,10 @@ void TestNativeTools() {
   for (const auto* property_schema :
        {R"({"type":"integer","allOf":[{"minimum":5}]})",
         R"({"allOf":[{"type":"integer"},{"minimum":5}]})"}) {
-    const auto constrained = parse(
-        std::string(R"({"type":"object","properties":{"n":)") +
-        property_schema +
-        R"(},"required":["n"],"additionalProperties":false})");
+    const auto constrained =
+        parse(std::string(R"({"type":"object","properties":{"n":)") +
+              property_schema +
+              R"(},"required":["n"],"additionalProperties":false})");
     const auto json = JsonConstraint::Compile(constrained, false);
     assert(Accepts(*json, R"({"n":5})"));
     assert(!Accepts(*json, R"({"n":4})"));

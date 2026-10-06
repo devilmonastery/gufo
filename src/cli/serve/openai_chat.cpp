@@ -1321,10 +1321,9 @@ bool HasRecursiveSchemaReference(const json::Value& root,
     bool recursive = false;
     if (const auto* reference = schema.find("$ref")) {
       try {
-        recursive = self(self,
-                         *sampling::JsonConstraint::ResolveReference(root,
-                                                                     *reference),
-                         depth + 1);
+        recursive = self(
+            self, *sampling::JsonConstraint::ResolveReference(root, *reference),
+            depth + 1);
       } catch (const std::invalid_argument&) {
       }
     }
@@ -1343,9 +1342,9 @@ bool HasRecursiveSchemaReference(const json::Value& root,
           }
         }
     }
-    for (const auto* key : {"items", "additionalProperties",
-                            "unevaluatedProperties", "not", "if", "then",
-                            "else", "contains", "propertyNames"})
+    for (const auto* key :
+         {"items", "additionalProperties", "unevaluatedProperties", "not", "if",
+          "then", "else", "contains", "propertyNames"})
       if (const auto* child = schema.find(key);
           !recursive && child && visit_child(*child))
         recursive = true;

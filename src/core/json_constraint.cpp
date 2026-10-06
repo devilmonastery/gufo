@@ -274,9 +274,10 @@ public:
     const auto* properties = root->find("properties");
     if (!properties || !properties->is_object())
       return {};
-    const bool open = !strict_ && !ClosedProperties(*root, best_effort) &&
-                      (root->contains("additionalProperties") ||
-                       (best_effort && AdmitsExtraProperties(*root)));
+    const bool open =
+        !strict_ && !ClosedProperties(*root, best_effort) &&
+        (root->contains("additionalProperties") || root->contains("allOf") ||
+         (best_effort && AdmitsExtraProperties(*root)));
     // Qwen has no type flag for wildcard parameters. Unknown names are text
     // in its parser: emitting native tags would turn 1/true/null/[]/{} into
     // strings. Preserve JSON types instead of guessing from their spelling.
